@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenAI Realtime Voice Agent</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      background: #f7f7f7;
+      padding: 20px;
+    }
+
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 14px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      margin-bottom: 16px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: white;
+      font-weight: bold;
+      background: #111827;
+    }
+
+    button.stop {
+      background: #dc2626;
+    }
+
+    .box {
+      background: #f1f5f9;
+      padding: 14px;
+      border-radius: 8px;
+      min-height: 45px;
+      white-space: pre-wrap;
+    }
+
+    .status {
+      font-weight: bold;
+      color: #2563eb;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>OpenAI Realtime Voice Agent</h1>
+
+    <p>
+      This is the true realtime voice version. Your microphone audio goes through WebRTC,
+      and the assistant responds with live audio.
+    </p>
+
+    <button onclick="startRealtime()">🎙️ Start Realtime Voice</button>
+    <button class="stop" onclick="stopRealtime()">⏹ Stop</button>
+
+    <p>Status: <span id="status" class="status">Idle</span></p>
+
+    <h3>Events</h3>
+    <div id="events" class="box"></div>
+
+    <h3>Assistant Audio</h3>
+    <audio id="assistantAudio" autoplay controls></audio>
+  </div>
+
+  <script>
+    let pc = null;
+    let dc = null;
+    let localStream = null;
+
+    function logEvent(message) {
+      const box = document.getElementById("events");
+      box.innerText += message + "\\n";
+    }
+
+    async function startRealtime() {
+      document.getElementById("status").innerText = "Starting...";
+      document.getElementById("events").innerText = "";
+
+      try {
+        pc = new RTCPeerConnection();
+
+        const audioElement = document.getElementById("assistantAudio");
+        audioElement.autoplay = true;
+
+        pc.ontrack = function(event) {
+          audioElement.srcObject = event.streams[0];
+          document.getElementById("status").innerText = "Assistant audio connected";
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        pc.addTrack(localStream.getTracks()[0]);
+
+        dc = pc.createDataChannel("oai-events");
+
+        dc.onopen = function() {
+          logEvent("Data channel opened");
+
+          dc.send(JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: "Greet the user briefly and ask how you can help."
+            }
+          }));
+        };
+
+        dc.onmessage = function(event) {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.type) {
+              logEvent(data.type);
+            }
+
+            if (data.type === "response.text.delta" && data.delta) {
+              logEvent("assistant text: " + data.delta);
+            }
+
+            if (data.type === "error") {
+              logEvent("ERROR: " + JSON.stringify(data));
+            }
+          } catch {
+            logEvent(event.data);
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const response = await fetch("/realtime/session", {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            "Content-Type": "application/sdp"
+          }
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText);
+        }
+
+        const answerSdp = await response.text();
+
+        await pc.setRemoteDescription({
+          type: "answer",
+          sdp: answerSdp
+        });
+
+        document.getElementById("status").innerText = "Connected. Start speaking.";
+        logEvent("Realtime connection established");
+
+      } catch (error) {
+        document.getElementById("status").innerText = "Error";
+        logEvent("Start failed: " + error.message);
+      }
+    }
+
+    function stopRealtime() {
+      if (dc) {
+        dc.close();
+        dc = null;
+      }
+
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+
+      document.getElementById("status").innerText = "Stopped";
+      logEvent("Stopped realtime session");
+    }
+  </script>
+</body>
+</html>

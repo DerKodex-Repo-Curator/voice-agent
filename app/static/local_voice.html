@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Local Backend Voice Agent</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 850px;
+      margin: 40px auto;
+      background: #f7f7f7;
+      padding: 20px;
+    }
+
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 14px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+    }
+
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      margin-bottom: 16px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: white;
+      font-weight: bold;
+      background: #111827;
+    }
+
+    button.stop {
+      background: #dc2626;
+    }
+
+    button.send {
+      background: #2563eb;
+    }
+
+    .box {
+      background: #f1f5f9;
+      padding: 14px;
+      border-radius: 8px;
+      min-height: 45px;
+      white-space: pre-wrap;
+    }
+
+    .status {
+      font-weight: bold;
+      color: #2563eb;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Local Backend Voice Agent</h1>
+
+    <p>
+      Record your voice in the browser. Backend transcribes with local Whisper.cpp,
+      answers using OpenRouter, and generates audio with macOS local TTS.
+    </p>
+
+    <label>Company ID</label>
+    <input
+      id="companyId"
+      value="2f2d77c9-9a60-422a-b6bb-ba475112255e"
+      placeholder="Enter company_id"
+    />
+
+    <label>Session ID</label>
+    <input id="sessionId" placeholder="Auto-filled after first message" />
+
+    <button onclick="startRecording()">🎙️ Start Recording</button>
+    <button class="stop" onclick="stopRecording()">⏹ Stop Recording</button>
+    <button class="send" onclick="sendRecording()">Send Recording to Backend</button>
+
+    <p>Status: <span id="status" class="status">Idle</span></p>
+
+    <h3>Transcript</h3>
+    <div id="transcript" class="box"></div>
+
+    <h3>Assistant Response</h3>
+    <div id="assistantResponse" class="box"></div>
+
+    <h3>Assistant Audio</h3>
+    <audio id="assistantAudio" controls></audio>
+  </div>
+
+  <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    let recordedBlob = null;
+
+    async function startRecording() {
+      audioChunks = [];
+      recordedBlob = null;
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = function(event) {
+          audioChunks.push(event.data);
+        };
+
+        mediaRecorder.onstop = function() {
+          recordedBlob = new Blob(audioChunks, { type: "audio/webm" });
+          document.getElementById("status").innerText = "Recording ready. Click Send.";
+        };
+
+        mediaRecorder.start();
+        document.getElementById("status").innerText = "Recording...";
+      } catch (error) {
+        document.getElementById("status").innerText = "Microphone error: " + error;
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        document.getElementById("status").innerText = "Processing recording...";
+      }
+    }
+
+    async function sendRecording() {
+      const companyId = document.getElementById("companyId").value.trim();
+      const sessionId = document.getElementById("sessionId").value.trim();
+
+      if (!companyId) {
+        alert("Company ID is required.");
+        return;
+      }
+
+      if (!recordedBlob) {
+        alert("Please record audio first.");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("company_id", companyId);
+      formData.append("session_id", sessionId || "");
+      formData.append("channel", "browser_recording_local_backend");
+      formData.append("audio_file", recordedBlob, "recording.webm");
+
+      document.getElementById("status").innerText = "Sending to backend...";
+
+      try {
+        const response = await fetch("/voice/local-chat", {
+          method: "POST",
+          body: formData
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          document.getElementById("status").innerText = "Backend error";
+          document.getElementById("assistantResponse").innerText =
+            JSON.stringify(data, null, 2);
+          return;
+        }
+
+        document.getElementById("sessionId").value = data.session_id;
+        document.getElementById("transcript").innerText = data.transcript;
+        document.getElementById("assistantResponse").innerText = data.assistant_message;
+
+        const audioPlayer = document.getElementById("assistantAudio");
+        audioPlayer.src = window.location.origin + data.audio_url;
+        audioPlayer.play();
+
+        document.getElementById("status").innerText =
+          "Done: " + data.stt_provider + " → " + data.llm_provider + " → " + data.tts_provider;
+
+      } catch (error) {
+        document.getElementById("status").innerText = "Request failed: " + error;
+      }
+    }
+  </script>
+</body>
+</html>

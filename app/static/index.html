@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Voice Agent Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 850px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f7f7f7;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+
+    input, textarea, button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      margin-bottom: 16px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      background: #111827;
+      color: white;
+      font-weight: bold;
+    }
+
+    button.secondary {
+      background: #2563eb;
+    }
+
+    button.danger {
+      background: #dc2626;
+    }
+
+    .box {
+      background: #f1f5f9;
+      padding: 14px;
+      border-radius: 8px;
+      min-height: 50px;
+      white-space: pre-wrap;
+    }
+
+    .status {
+      font-weight: bold;
+      color: #2563eb;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>General Voice Agent Demo</h1>
+    <p>This demo uses browser speech recognition + OpenRouter backend response + browser speech output.</p>
+
+    <label>Company ID</label>
+    <input
+      id="companyId"
+      value="2f2d77c9-9a60-422a-b6bb-ba475112255e"
+      placeholder="Paste company_id here"
+    />
+
+    <label>Session ID</label>
+    <input id="sessionId" placeholder="Auto-filled after first message" />
+
+    <button onclick="startListening()">🎤 Start Speaking</button>
+    <button class="danger" onclick="stopListening()">Stop Listening</button>
+
+    <p>Status: <span id="status" class="status">Idle</span></p>
+
+    <h3>Your Speech/Text</h3>
+    <textarea id="userText" rows="4" placeholder="Speak or type your message here"></textarea>
+
+    <button class="secondary" onclick="sendMessage()">Send Message</button>
+
+    <h3>Assistant Response</h3>
+    <div id="assistantResponse" class="box"></div>
+  </div>
+
+  <script>
+    let recognition = null;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (SpeechRecognition) {
+      recognition = new SpeechRecognition();
+      recognition.lang = "en-US";
+      recognition.interimResults = false;
+      recognition.continuous = false;
+
+      recognition.onstart = function () {
+        document.getElementById("status").innerText = "Listening...";
+      };
+
+      recognition.onresult = function (event) {
+        const transcript = event.results[0][0].transcript;
+        document.getElementById("userText").value = transcript;
+        document.getElementById("status").innerText = "Speech captured";
+        sendMessage();
+      };
+
+      recognition.onerror = function (event) {
+        document.getElementById("status").innerText = "Speech error: " + event.error;
+      };
+
+      recognition.onend = function () {
+        if (document.getElementById("status").innerText === "Listening...") {
+          document.getElementById("status").innerText = "Stopped";
+        }
+      };
+    } else {
+      alert("Speech recognition is not supported in this browser. Please use Chrome.");
+    }
+
+    function startListening() {
+      if (!recognition) {
+        alert("Speech recognition not supported.");
+        return;
+      }
+
+      recognition.start();
+    }
+
+    function stopListening() {
+      if (recognition) {
+        recognition.stop();
+      }
+      document.getElementById("status").innerText = "Stopped";
+    }
+
+    async function sendMessage() {
+      const companyId = document.getElementById("companyId").value.trim();
+      const sessionId = document.getElementById("sessionId").value.trim();
+      const message = document.getElementById("userText").value.trim();
+
+      if (!companyId) {
+        alert("Please enter company ID.");
+        return;
+      }
+
+      if (!message) {
+        alert("Please speak or type a message.");
+        return;
+      }
+
+      document.getElementById("status").innerText = "Sending to backend...";
+
+      try {
+        const response = await fetch("/chat/message", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            company_id: companyId,
+            session_id: sessionId || null,
+            message: message,
+            channel: "web_voice_demo"
+          })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          document.getElementById("assistantResponse").innerText =
+            "Error: " + JSON.stringify(data, null, 2);
+          document.getElementById("status").innerText = "Backend error";
+          return;
+        }
+
+        document.getElementById("sessionId").value = data.session_id;
+        document.getElementById("assistantResponse").innerText = data.assistant_message;
+        document.getElementById("status").innerText =
+          "Response received from " + data.llm_provider + " / " + data.model_used;
+
+        speakText(data.assistant_message);
+
+      } catch (error) {
+        document.getElementById("assistantResponse").innerText = "Request failed: " + error;
+        document.getElementById("status").innerText = "Request failed";
+      }
+    }
+
+    function speakText(text) {
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.rate = 1;
+      utterance.pitch = 1;
+
+      window.speechSynthesis.speak(utterance);
+    }
+  </script>
+</body>
+</html>

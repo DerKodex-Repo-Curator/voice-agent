@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebSocket Voice Streaming Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      background: #f7f7f7;
+      padding: 20px;
+    }
+
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 14px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+    }
+
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      margin-bottom: 16px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: white;
+      font-weight: bold;
+      background: #111827;
+    }
+
+    button.stop {
+      background: #dc2626;
+    }
+
+    .box {
+      background: #f1f5f9;
+      padding: 14px;
+      border-radius: 8px;
+      min-height: 45px;
+      white-space: pre-wrap;
+    }
+
+    .status {
+      font-weight: bold;
+      color: #2563eb;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>WebSocket Voice Streaming Demo</h1>
+
+    <p>
+      This streams microphone chunks to FastAPI over WebSocket.
+      Backend transcribes with local Whisper.cpp, responds through the LLM router,
+      and plays back local TTS audio.
+    </p>
+
+    <label>Company ID</label>
+    <input
+      id="companyId"
+      value="2f2d77c9-9a60-422a-b6bb-ba475112255e"
+      placeholder="Enter company_id"
+    />
+
+    <label>Session ID</label>
+    <input id="sessionId" placeholder="Auto-filled after first message" />
+
+    <button onclick="startStreaming()">🎙️ Start Streaming</button>
+    <button class="stop" onclick="stopStreaming()">⏹ Stop and Process</button>
+
+    <p>Status: <span id="status" class="status">Idle</span></p>
+
+    <h3>Transcript</h3>
+    <div id="transcript" class="box"></div>
+
+    <h3>Assistant Response</h3>
+    <div id="assistantResponse" class="box"></div>
+
+    <h3>Assistant Audio</h3>
+    <audio id="assistantAudio" controls></audio>
+  </div>
+
+  <script>
+    let ws = null;
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let chunksSent = 0;
+
+    async function startStreaming() {
+      const companyId = document.getElementById("companyId").value.trim();
+      const sessionId = document.getElementById("sessionId").value.trim();
+
+      if (!companyId) {
+        alert("Company ID is required.");
+        return;
+      }
+
+      chunksSent = 0;
+      document.getElementById("transcript").innerText = "";
+      document.getElementById("assistantResponse").innerText = "";
+      document.getElementById("assistantAudio").removeAttribute("src");
+
+      const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws/voice-stream`);
+
+      ws.onopen = async function () {
+        document.getElementById("status").innerText = "WebSocket connected";
+
+        ws.send(JSON.stringify({
+          type: "start",
+          company_id: companyId,
+          session_id: sessionId || null,
+          channel: "browser_websocket_voice_stream"
+        }));
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        mediaRecorder = new MediaRecorder(mediaStream, {
+          mimeType: "audio/webm"
+        });
+
+        mediaRecorder.ondataavailable = async function (event) {
+          if (event.data && event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            const buffer = await event.data.arrayBuffer();
+            ws.send(buffer);
+            chunksSent += 1;
+            document.getElementById("status").innerText =
+              `Streaming audio chunks... sent ${chunksSent}`;
+          }
+        };
+
+        mediaRecorder.start(500);
+      };
+
+      ws.onmessage = function (event) {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "ready") {
+          document.getElementById("status").innerText = data.message;
+        }
+
+        if (data.type === "chunk_ack") {
+          document.getElementById("status").innerText =
+            `Backend received ${data.chunks_received} chunks`;
+        }
+
+        if (data.type === "processing") {
+          document.getElementById("status").innerText =
+            `Processing ${data.chunks_received} chunks...`;
+        }
+
+        if (data.type === "final") {
+          document.getElementById("sessionId").value = data.session_id;
+          document.getElementById("transcript").innerText = data.transcript;
+          document.getElementById("assistantResponse").innerText = data.assistant_message;
+
+          const audioPlayer = document.getElementById("assistantAudio");
+          audioPlayer.src = window.location.origin + data.audio_url;
+          audioPlayer.play();
+
+          document.getElementById("status").innerText =
+            `Done: ${data.stt_provider} → ${data.llm_provider} → ${data.tts_provider}`;
+        }
+
+        if (data.type === "error") {
+          document.getElementById("status").innerText = "Error";
+          document.getElementById("assistantResponse").innerText = data.message;
+        }
+      };
+
+      ws.onerror = function () {
+        document.getElementById("status").innerText = "WebSocket error";
+      };
+
+      ws.onclose = function () {
+        if (document.getElementById("status").innerText.includes("Streaming")) {
+          document.getElementById("status").innerText = "WebSocket closed";
+        }
+      };
+    }
+
+    function stopStreaming() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.requestData();
+        mediaRecorder.stop();
+      }
+
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+      }
+
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "stop" }));
+          document.getElementById("status").innerText = "Sent stop signal. Waiting for backend...";
+        }
+      }, 500);
+    }
+  </script>
+</body>
+</html>
